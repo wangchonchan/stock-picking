@@ -56,13 +56,12 @@ def get_stock_data(ticker):
         pb = None
         name = ticker
         try:
-            # We only call info once and get what we can
             info = stock.info
             if info:
                 pb = info.get('priceToBook')
                 name = info.get('shortName') or info.get('longName') or ticker
         except:
-            pass # If info fails, we still have price and RSI
+            pass 
         
         return {
             "ticker": ticker,
@@ -76,26 +75,33 @@ def get_stock_data(ticker):
 
 def screen_stocks(market='US'):
     if market == 'HK':
-        # Focus on top 150 HK stocks for better stability and speed
-        tickers = [f"{str(i).zfill(4)}.HK" for i in range(1, 151)] + \
-                  ["9988.HK", "3690.HK", "1810.HK", "1024.HK", "9618.HK", "9888.HK", "2015.HK", "6618.HK", "9633.HK", "9961.HK", "9999.HK"]
+        # Core 80 HK stocks (Hang Seng Index components)
+        tickers = [
+            "0001.HK", "0002.HK", "0003.HK", "0005.HK", "0006.HK", "0011.HK", "0012.HK", "0016.HK", "0017.HK", "0027.HK",
+            "0066.HK", "0101.HK", "0151.HK", "0175.HK", "0267.HK", "0288.HK", "0386.HK", "0388.HK", "0669.HK", "0688.HK",
+            "0700.HK", "0762.HK", "0823.HK", "0857.HK", "0883.HK", "0939.HK", "0941.HK", "0960.HK", "0968.HK", "0992.HK",
+            "1038.HK", "1044.HK", "1088.HK", "1093.HK", "1109.HK", "1113.HK", "1177.HK", "1199.HK", "1211.HK", "1299.HK",
+            "1313.HK", "1378.HK", "1398.HK", "1810.HK", "1876.HK", "1928.HK", "1929.HK", "2015.HK", "2020.HK", "2269.HK",
+            "2313.HK", "2318.HK", "2319.HK", "2331.HK", "2382.HK", "2388.HK", "2628.HK", "2688.HK", "3690.HK", "3968.HK",
+            "3988.HK", "6030.HK", "6098.HK", "6618.HK", "6690.HK", "6862.HK", "9618.HK", "9633.HK", "9888.HK", "9961.HK",
+            "9988.HK", "9999.HK", "1024.HK", "0010.HK", "0019.HK", "0083.HK", "0291.HK", "0322.HK", "0358.HK", "0390.HK"
+        ]
     else: # US
-        # Focus on S&P 100 + Nasdaq 100 (approx 150-200 tickers)
+        # Core 80 US stocks (Top S&P 500 / Nasdaq 100)
         tickers = [
             "AAPL", "MSFT", "GOOGL", "AMZN", "META", "TSLA", "NVDA", "BRK-B", "JPM", "V", "UNH", "MA", "PG", "HD", "DIS",
             "PYPL", "ADBE", "NFLX", "INTC", "CSCO", "PEP", "KO", "PFE", "XOM", "CVX", "ABT", "CRM", "BAC", "COST", "WMT",
-            "TMO", "AVGO", "ORCL", "ACN", "LIN", "NKE", "DHR", "ABBV", "NEXT", "AMD", "TXN", "PM", "UPS", "NEE", "MS",
-            "RTX", "HON", "LOW", "UNP", "BMY", "AMAT", "SBUX", "CAT", "GS", "GE", "DE", "INTU", "PLD", "AXP", "T",
-            "VZ", "C", "MDLZ", "ISRG", "GILD", "BKNG", "TJX", "ADP", "MDT", "LMT", "SYK", "CI", "VRTX", "MMC", "REGN",
-            "ADI", "ZTS", "BSX", "AMT", "CB", "BA", "MU", "LRCX", "PANW", "SNPS", "CDNS", "EQIX", "SCCO", "MO", "ETN",
-            "ORLY", "SLB", "PGR", "SHW", "MPC", "VLO", "PSX", "COP", "EOG", "OXY", "HES", "DVN", "HAL", "BKR", "KMI"
+            "TMO", "AVGO", "ORCL", "ACN", "LIN", "NKE", "DHR", "ABBV", "AMD", "TXN", "PM", "UPS", "NEE", "MS", "RTX",
+            "HON", "LOW", "UNP", "BMY", "AMAT", "SBUX", "CAT", "GS", "GE", "DE", "INTU", "PLD", "AXP", "T", "VZ", "C",
+            "MDLZ", "ISRG", "GILD", "BKNG", "TJX", "ADP", "MDT", "LMT", "SYK", "CI", "VRTX", "MMC", "REGN", "ADI", "ZTS",
+            "BSX", "AMT", "CB", "BA", "MU"
         ]
     
     tickers = list(set(tickers))
     results = []
     
-    # Use a smaller worker count to avoid being blocked by Yahoo
-    with ThreadPoolExecutor(max_workers=8) as executor:
+    # Use a safe worker count
+    with ThreadPoolExecutor(max_workers=10) as executor:
         future_to_ticker = {executor.submit(get_stock_data, t): t for t in tickers}
         for future in as_completed(future_to_ticker):
             try:
