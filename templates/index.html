@@ -35,7 +35,7 @@
                 </select>
             </div>
             <button id="screenBtn" class="bg-blue-600 hover:bg-blue-700 text-white font-bold py-2 px-6 rounded transition duration-200">
-                开始扫描并存储
+                开始扫描
             </button>
             <div id="loading" class="hidden">
                 <div class="loader mr-2"></div>
@@ -44,6 +44,10 @@
         </div>
 
         <div id="statusMsg" class="mb-6 text-center hidden"></div>
+
+        <div id="resultsHeader" class="mb-4 text-center hidden">
+            <h2 id="resultsTitle" class="text-2xl font-bold text-gray-700"></h2>
+        </div>
 
         <div id="results" class="grid grid-cols-1 md:grid-cols-3 gap-6 hidden">
             <!-- Section 1: PB < 1 -->
@@ -65,10 +69,10 @@
             </div>
         </div>
         
-        <div class="mt-12">
-            <h2 class="text-2xl font-bold text-gray-800 mb-4">历史记录</h2>
+        <div class="mt-12 border-t pt-8">
+            <h2 class="text-2xl font-bold text-gray-800 mb-4">历史扫描记录</h2>
             <div id="historyList" class="flex flex-wrap gap-2">
-                <p class="text-gray-500">暂无历史记录</p>
+                <p class="text-gray-500">正在加载历史记录...</p>
             </div>
         </div>
     </div>
@@ -78,13 +82,25 @@
         const marketSelect = document.getElementById('marketSelect');
         const loading = document.getElementById('loading');
         const results = document.getElementById('results');
+        const resultsHeader = document.getElementById('resultsHeader');
+        const resultsTitle = document.getElementById('resultsTitle');
         const statusMsg = document.getElementById('statusMsg');
         const historyList = document.getElementById('historyList');
+
+        function updateUI(data) {
+            resultsTitle.textContent = `${data.date} - ${data.market === 'HK' ? '港股' : '美股'} 扫描结果`;
+            resultsHeader.classList.remove('hidden');
+            
+            updateList('sec1_list', data.pb_less_1);
+            updateList('sec2_list', data.rsi_less_35);
+            updateList('sec3_list', data.rsi_greater_65);
+            results.classList.remove('hidden');
+        }
 
         function updateList(containerId, stocks) {
             const container = document.getElementById(containerId);
             container.innerHTML = '';
-            if (stocks.length === 0) {
+            if (!stocks || stocks.length === 0) {
                 container.innerHTML = '<p class="text-gray-500 italic">未找到符合条件的股票</p>';
                 return;
             }
@@ -94,10 +110,10 @@
                 div.innerHTML = `
                     <div>
                         <div class="font-bold">${s.ticker}</div>
-                        <div class="text-xs text-gray-500">${s.name}</div>
+                        <div class="text-xs text-gray-500 truncate w-32">${s.name}</div>
                     </div>
                     <div class="text-right">
-                        <div class="text-sm font-medium">$${s.price ? s.price.toFixed(2) : 'N/A'}</div>
+                        <div class="text-sm font-medium">${s.price ? '$' + s.price.toFixed(2) : 'N/A'}</div>
                         <div class="text-xs text-gray-400">PB: ${s.pb ? s.pb.toFixed(2) : 'N/A'} | RSI: ${s.rsi ? s.rsi.toFixed(1) : 'N/A'}</div>
                     </div>
                 `;
@@ -109,18 +125,39 @@
             try {
                 const res = await fetch('/api/records');
                 const files = await res.json();
+                historyList.innerHTML = '';
                 if (files.length > 0) {
-                    historyList.innerHTML = '';
                     files.forEach(file => {
                         const btn = document.createElement('button');
-                        btn.className = 'bg-gray-200 hover:bg-gray-300 px-3 py-1 rounded text-sm';
-                        btn.textContent = file;
-                        // For now just display the name, could add click to view logic
+                        btn.className = 'bg-gray-200 hover:bg-gray-300 px-3 py-1 rounded text-sm transition';
+                        // Format filename for display: 20231027_123045_US.json -> 10-27 12:30 (US)
+                        const parts = file.split('_');
+                        const datePart = parts[0];
+                        const timePart = parts[1];
+                        const marketPart = parts[2].split('.')[0];
+                        const displayDate = `${datePart.substring(4,6)}-${datePart.substring(6,8)} ${timePart.substring(0,2)}:${timePart.substring(2,4)}`;
+                        
+                        btn.textContent = `${displayDate} (${marketPart})`;
+                        btn.onclick = () => loadRecordDetail(file);
                         historyList.appendChild(btn);
                     });
+                } else {
+                    historyList.innerHTML = '<p class="text-gray-500">暂无历史记录</p>';
                 }
             } catch (e) {
                 console.error("Failed to load history", e);
+                historyList.innerHTML = '<p class="text-red-500">加载历史记录失败</p>';
+            }
+        }
+
+        async function loadRecordDetail(filename) {
+            try {
+                const res = await fetch(`/api/records/${filename}`);
+                const result = await res.json();
+                updateUI(result);
+                window.scrollTo({ top: 0, behavior: 'smooth' });
+            } catch (e) {
+                alert("加载详情失败: " + e.message);
             }
         }
 
@@ -129,6 +166,7 @@
             loading.classList.remove('hidden');
             screenBtn.disabled = true;
             results.classList.add('hidden');
+            resultsHeader.classList.add('hidden');
             statusMsg.classList.add('hidden');
 
             try {
@@ -143,20 +181,13 @@
                 screenBtn.disabled = false;
                 
                 if (result.success) {
-                    statusMsg.textContent = "✅ 扫描完成并已存入 GitHub！";
-                    statusMsg.className = "mb-6 text-center text-green-600 font-bold";
+                    updateUI(result.data);
+                    loadHistory();
                 } else {
-                    statusMsg.textContent = "⚠️ 扫描完成，但存入 GitHub 失败: " + result.message;
-                    statusMsg.className = "mb-6 text-center text-orange-600 font-bold";
+                    statusMsg.textContent = "❌ 扫描失败: " + result.message;
+                    statusMsg.className = "mb-6 text-center text-red-600 font-bold";
+                    statusMsg.classList.remove('hidden');
                 }
-                statusMsg.classList.remove('hidden');
-                
-                updateList('sec1_list', result.data.pb_less_1);
-                updateList('sec2_list', result.data.rsi_less_35);
-                updateList('sec3_list', result.data.rsi_greater_65);
-                results.classList.remove('hidden');
-                
-                loadHistory();
             } catch (e) {
                 loading.classList.add('hidden');
                 screenBtn.disabled = false;

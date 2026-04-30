@@ -4,15 +4,14 @@ import numpy as np
 import datetime
 import json
 import os
-import requests
-import base64
 from flask import Flask, request, jsonify, render_template
 
 app = Flask(__name__)
 
-# Configuration
-GITHUB_REPO = "wangchonchan/stock-picking"
-GITHUB_TOKEN = os.environ.get("GITHUB_TOKEN") # User needs to provide this in HF Secrets
+# Local storage configuration
+RECORDS_DIR = "records"
+if not os.path.exists(RECORDS_DIR):
+    os.makedirs(RECORDS_DIR)
 
 def calculate_rsi(data, window=14):
     if len(data) < window + 1:
@@ -26,7 +25,12 @@ def calculate_rsi(data, window=14):
 def get_stock_data(ticker):
     try:
         stock = yf.Ticker(ticker)
-        info = stock.info
+        # Use fast_info if available, otherwise fallback to info
+        try:
+            info = stock.info
+        except:
+            info = {}
+            
         pb = info.get('priceToBook')
         
         hist = stock.history(period="1mo")
@@ -48,8 +52,6 @@ def get_stock_data(ticker):
         return None
 
 def screen_stocks(market='US'):
-    # In a real scenario, we'd have a larger list. 
-    # For this demo/tool, we'll use a representative list of top stocks.
     if market == 'HK':
         tickers = [
             "0700.HK", "9988.HK", "3690.HK", "1299.HK", "0005.HK", "0939.HK", "1398.HK", "2318.HK", "3988.HK", "3968.HK",
@@ -70,56 +72,28 @@ def screen_stocks(market='US'):
         if data:
             results.append(data)
             
-    # Section 1: PB < 1
     sec1 = [s for s in results if s['pb'] is not None and s['pb'] < 1][:20]
-    # Section 2: RSI < 35
     sec2 = [s for s in results if s['rsi'] is not None and s['rsi'] < 35][:20]
-    # Section 3: RSI > 65
     sec3 = [s for s in results if s['rsi'] is not None and s['rsi'] > 65][:20]
     
     return {
-        "date": datetime.datetime.now().strftime("%Y-%m-%d"),
+        "date": datetime.datetime.now().strftime("%Y-%m-%d %H:%M"),
         "market": market,
         "pb_less_1": sec1,
         "rsi_less_35": sec2,
         "rsi_greater_65": sec3
     }
 
-def save_to_github(data):
-    if not GITHUB_TOKEN:
-        return False, "Missing GITHUB_TOKEN"
-    
-    date_str = data['date']
-    market = data['market']
-    file_path = f"records/{date_str}_{market}.json"
-    url = f"https://api.github.com/repos/{GITHUB_REPO}/contents/{file_path}"
-    
-    headers = {
-        "Authorization": f"token {GITHUB_TOKEN}",
-        "Accept": "application/vnd.github.v3+json"
-    }
-    
-    # Check if file exists to get SHA
-    res = requests.get(url, headers=headers)
-    sha = None
-    if res.status_code == 200:
-        sha = res.json()['sha']
-        
-    content = base64.b64encode(json.dumps(data, indent=4, ensure_ascii=False).encode()).decode()
-    
-    payload = {
-        "message": f"Add daily record for {date_str} ({market})",
-        "content": content,
-        "branch": "main"
-    }
-    if sha:
-        payload["sha"] = sha
-        
-    res = requests.put(url, headers=headers, json=payload)
-    if res.status_code in [200, 201]:
-        return True, "Success"
-    else:
-        return False, res.text
+def save_locally(data):
+    try:
+        timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+        filename = f"{timestamp}_{data['market']}.json"
+        file_path = os.path.join(RECORDS_DIR, filename)
+        with open(file_path, 'w', encoding='utf-8') as f:
+            json.dump(data, f, indent=4, ensure_ascii=False)
+        return True, filename
+    except Exception as e:
+        return False, str(e)
 
 @app.route('/')
 def index():
@@ -129,27 +103,24 @@ def index():
 def api_screen():
     market = request.json.get('market', 'US')
     data = screen_stocks(market)
-    success, msg = save_to_github(data)
+    success, filename = save_locally(data)
     return jsonify({
         "success": success,
-        "message": msg,
         "data": data
     })
 
 @app.route('/api/records', methods=['GET'])
 def get_records():
-    # This would ideally list files in the 'records/' directory of the repo
-    # For now, we'll return an empty list or implement a basic fetch
-    if not GITHUB_TOKEN:
-        return jsonify([])
-    
-    url = f"https://api.github.com/repos/{GITHUB_REPO}/contents/records"
-    headers = {"Authorization": f"token {GITHUB_TOKEN}"}
-    res = requests.get(url, headers=headers)
-    if res.status_code == 200:
-        files = res.json()
-        return jsonify([f['name'] for f in files if f['name'].endswith('.json')])
-    return jsonify([])
+    files = sorted([f for f in os.listdir(RECORDS_DIR) if f.endswith('.json')], reverse=True)
+    return jsonify(files)
+
+@app.route('/api/records/<filename>', methods=['GET'])
+def get_record_detail(filename):
+    file_path = os.path.join(RECORDS_DIR, filename)
+    if os.path.exists(file_path):
+        with open(file_path, 'r', encoding='utf-8') as f:
+            return jsonify(json.load(f))
+    return jsonify({"error": "File not found"}), 404
 
 if __name__ == '__main__':
     app.run(host='0.0.0.0', port=7860)
