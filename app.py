@@ -30,6 +30,7 @@ def calculate_rsi(data, window=14):
     gain = delta.where(delta > 0, 0)
     loss = -delta.where(delta < 0, 0)
     
+    # Standard Wilder's smoothing
     avg_gain = gain.ewm(alpha=1/window, min_periods=window).mean()
     avg_loss = loss.ewm(alpha=1/window, min_periods=window).mean()
     
@@ -38,31 +39,27 @@ def calculate_rsi(data, window=14):
     return rsi.iloc[-1]
 
 def get_stock_data(ticker):
-    """Robustly fetch stock data using history first, then info as fallback"""
+    """Fetch REAL stock data from Yahoo Finance"""
     try:
         stock = yf.Ticker(ticker)
         
-        # 1. Get history first (most reliable for price and RSI)
+        # 1. Get history for price and RSI (Most reliable)
         hist = stock.history(period="2mo")
         if hist.empty:
             return None
             
         current_price = hist['Close'].iloc[-1]
-        
-        # 2. Calculate RSI
         rsi = calculate_rsi(hist['Close'], window=14)
             
-        # 3. Get PB and Name (info is unstable, so we wrap it carefully)
-        pb = None
-        name = ticker
-        try:
-            info = stock.info
-            if info:
-                pb = info.get('priceToBook')
-                name = info.get('shortName') or info.get('longName') or ticker
-        except:
-            pass 
+        # 2. Get PB and Name from info (Only real data)
+        info = stock.info
+        if not info:
+            return None
+            
+        pb = info.get('priceToBook')
+        name = info.get('shortName') or info.get('longName') or ticker
         
+        # We only return if we have the core data requested
         return {
             "ticker": ticker,
             "name": name,
@@ -75,7 +72,7 @@ def get_stock_data(ticker):
 
 def screen_stocks(market='US'):
     if market == 'HK':
-        # Core 80 HK stocks (Hang Seng Index components)
+        # Top 80 HK stocks (Hang Seng Index components)
         tickers = [
             "0001.HK", "0002.HK", "0003.HK", "0005.HK", "0006.HK", "0011.HK", "0012.HK", "0016.HK", "0017.HK", "0027.HK",
             "0066.HK", "0101.HK", "0151.HK", "0175.HK", "0267.HK", "0288.HK", "0386.HK", "0388.HK", "0669.HK", "0688.HK",
@@ -87,7 +84,7 @@ def screen_stocks(market='US'):
             "9988.HK", "9999.HK", "1024.HK", "0010.HK", "0019.HK", "0083.HK", "0291.HK", "0322.HK", "0358.HK", "0390.HK"
         ]
     else: # US
-        # Core 80 US stocks (Top S&P 500 / Nasdaq 100)
+        # Top 80 US stocks (S&P 100 / Nasdaq 100)
         tickers = [
             "AAPL", "MSFT", "GOOGL", "AMZN", "META", "TSLA", "NVDA", "BRK-B", "JPM", "V", "UNH", "MA", "PG", "HD", "DIS",
             "PYPL", "ADBE", "NFLX", "INTC", "CSCO", "PEP", "KO", "PFE", "XOM", "CVX", "ABT", "CRM", "BAC", "COST", "WMT",
@@ -100,7 +97,7 @@ def screen_stocks(market='US'):
     tickers = list(set(tickers))
     results = []
     
-    # Use a safe worker count
+    # Use ThreadPoolExecutor for real-time fetching
     with ThreadPoolExecutor(max_workers=10) as executor:
         future_to_ticker = {executor.submit(get_stock_data, t): t for t in tickers}
         for future in as_completed(future_to_ticker):
