@@ -18,7 +18,7 @@ if not os.path.exists(RECORDS_DIR):
 
 def get_hk_time():
     """Get current time in Hong Kong timezone"""
-    hk_tz = pytz.timezone('Asia/Hong Kong')
+    hk_tz = pytz.timezone('Asia/Hong_Kong')
     return datetime.datetime.now(hk_tz)
 
 def calculate_rsi(data, window=14):
