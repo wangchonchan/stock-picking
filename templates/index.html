@@ -50,19 +50,14 @@
         </div>
 
         <div id="results" class="grid grid-cols-1 md:grid-cols-3 gap-6 hidden">
-            <!-- Section 1: PB < 1 -->
             <div class="bg-blue-50 p-4 rounded-lg border border-blue-200">
                 <h2 class="text-xl font-bold text-blue-800 mb-4 border-b border-blue-200 pb-2">PB < 1 (破净股)</h2>
                 <div id="sec1_list" class="space-y-2"></div>
             </div>
-
-            <!-- Section 2: RSI < 35 -->
             <div class="bg-green-50 p-4 rounded-lg border border-green-200">
                 <h2 class="text-xl font-bold text-green-800 mb-4 border-b border-green-200 pb-2">RSI < 35 (超卖)</h2>
                 <div id="sec2_list" class="space-y-2"></div>
             </div>
-
-            <!-- Section 3: RSI > 65 -->
             <div class="bg-red-50 p-4 rounded-lg border border-red-200">
                 <h2 class="text-xl font-bold text-red-800 mb-4 border-b border-red-200 pb-2">RSI > 65 (超买)</h2>
                 <div id="sec3_list" class="space-y-2"></div>
@@ -70,7 +65,7 @@
         </div>
         
         <div class="mt-12 border-t pt-8">
-            <h2 class="text-2xl font-bold text-gray-800 mb-4">历史扫描记录</h2>
+            <h2 class="text-2xl font-bold text-gray-800 mb-4">历史扫描记录 (香港时间)</h2>
             <div id="historyList" class="flex flex-wrap gap-2">
                 <p class="text-gray-500">正在加载历史记录...</p>
             </div>
@@ -90,7 +85,6 @@
         function updateUI(data) {
             resultsTitle.textContent = `${data.date} - ${data.market === 'HK' ? '港股' : '美股'} 扫描结果`;
             resultsHeader.classList.remove('hidden');
-            
             updateList('sec1_list', data.pb_less_1);
             updateList('sec2_list', data.rsi_less_35);
             updateList('sec3_list', data.rsi_greater_65);
@@ -128,25 +122,45 @@
                 historyList.innerHTML = '';
                 if (files.length > 0) {
                     files.forEach(file => {
+                        const group = document.createElement('div');
+                        group.className = 'flex items-center bg-gray-200 rounded overflow-hidden';
+                        
                         const btn = document.createElement('button');
-                        btn.className = 'bg-gray-200 hover:bg-gray-300 px-3 py-1 rounded text-sm transition';
-                        // Format filename for display: 20231027_123045_US.json -> 10-27 12:30 (US)
+                        btn.className = 'hover:bg-gray-300 px-3 py-1 text-sm transition';
                         const parts = file.split('_');
                         const datePart = parts[0];
                         const timePart = parts[1];
                         const marketPart = parts[2].split('.')[0];
                         const displayDate = `${datePart.substring(4,6)}-${datePart.substring(6,8)} ${timePart.substring(0,2)}:${timePart.substring(2,4)}`;
-                        
                         btn.textContent = `${displayDate} (${marketPart})`;
                         btn.onclick = () => loadRecordDetail(file);
-                        historyList.appendChild(btn);
+                        
+                        const delBtn = document.createElement('button');
+                        delBtn.className = 'bg-red-100 hover:bg-red-200 text-red-600 px-2 py-1 text-xs font-bold border-l border-gray-300';
+                        delBtn.textContent = '×';
+                        delBtn.onclick = (e) => {
+                            e.stopPropagation();
+                            if(confirm('确定删除这条记录吗？')) deleteRecord(file);
+                        };
+                        
+                        group.appendChild(btn);
+                        group.appendChild(delBtn);
+                        historyList.appendChild(group);
                     });
                 } else {
                     historyList.innerHTML = '<p class="text-gray-500">暂无历史记录</p>';
                 }
             } catch (e) {
-                console.error("Failed to load history", e);
                 historyList.innerHTML = '<p class="text-red-500">加载历史记录失败</p>';
+            }
+        }
+
+        async function deleteRecord(filename) {
+            try {
+                const res = await fetch(`/api/records/${filename}`, { method: 'DELETE' });
+                if (res.ok) loadHistory();
+            } catch (e) {
+                alert("删除失败: " + e.message);
             }
         }
 
@@ -176,10 +190,8 @@
                     body: JSON.stringify({ market })
                 });
                 const result = await res.json();
-                
                 loading.classList.add('hidden');
                 screenBtn.disabled = false;
-                
                 if (result.success) {
                     updateUI(result.data);
                     loadHistory();
