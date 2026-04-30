@@ -1,3 +1,13 @@
+---
+title: Stock Picking System
+emoji: 📈
+colorFrom: blue
+colorTo: green
+sdk: docker
+app_port: 7860
+pinned: false
+---
+
 # Stock Picking System (股票自动选股系统)
 
 这是一个基于 Python 和 Flask 构建的自动选股系统，支持港股和美股市场。
