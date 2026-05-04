@@ -10,9 +10,9 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 import pytz
 
 app = Flask(__name__)
-MAX_FETCH_RETRIES = 2
-BACKOFF_SECONDS = [0.5, 1.0]
-REQUEST_INTERVAL_SECONDS = 0.25
+MAX_FETCH_RETRIES = 3
+BACKOFF_SECONDS = [0.8, 1.5, 2.5]
+REQUEST_INTERVAL_SECONDS = 0.4
 MAX_WORKERS = 2
 
 # Local storage configuration
@@ -35,71 +35,100 @@ def calculate_rsi(data, window=14):
     rsi = 100 - (100 / (1 + rs))
     return rsi.iloc[-1]
 
-def get_stock_data(ticker, display_name=None):
+def get_stock_data(ticker, english_name=None, chinese_name=None):
     try:
         time.sleep(REQUEST_INTERVAL_SECONDS)
         stock = yf.Ticker(ticker)
         hist = None
+        last_history_error = None
         for attempt in range(MAX_FETCH_RETRIES + 1):
-            hist = stock.history(period="2mo")
-            if not hist.empty:
-                break
+            try:
+                hist = stock.history(period="2mo", timeout=12)
+                if not hist.empty:
+                    break
+            except Exception as e:
+                last_history_error = f"{type(e).__name__}: {str(e)[:120]}"
             if attempt < MAX_FETCH_RETRIES:
                 time.sleep(BACKOFF_SECONDS[min(attempt, len(BACKOFF_SECONDS) - 1)])
         if hist is None or hist.empty:
+            if last_history_error:
+                return None, f"history_error_after_retries({last_history_error})"
             return None, "empty_history_after_retries"
         current_price = hist['Close'].iloc[-1]
         rsi = calculate_rsi(hist['Close'], window=14)
         
         pb = None
-        name = display_name or ticker
+        name = english_name or ticker
         
         try:
             info = stock.info
             if info:
                 pb = info.get('priceToBook')
-                name = display_name or info.get('longName') or info.get('shortName') or ticker
+                name = english_name or info.get('longName') or info.get('shortName') or ticker
         except:
             pass
             
         return {
             "ticker": ticker,
             "name": name,
+            "english_name": english_name or name,
+            "chinese_name": chinese_name,
             "pb": pb,
             "rsi": rsi,
             "price": current_price,
             "url": f"https://finance.yahoo.com/quote/{ticker}"
         }, None
-    except:
-        return None, "fetch_exception"
+    except Exception as e:
+        return None, f"fetch_exception({type(e).__name__}: {str(e)[:120]})"
 
 def screen_stocks(market='US'):
     stock_list = []
+    preload_failed_tickers = []
     if market == 'HK':
         try:
-            df = pd.read_excel('hk_stocks.xlsx')
+            df = pd.read_excel('HKEX_stock_names_and_numbers_with_Chinese_names.xlsx')
+            stock_number_col = 'Stock Number' if 'Stock Number' in df.columns else None
+            if stock_number_col is None:
+                raise ValueError("missing Stock Number column")
             for _, row in df.iterrows():
-                ticker = f"{int(row['Stock Number']):04d}.HK"
-                display_name = str(row.get('中文名称', '')).strip() or str(row.get('Stock Name', '')).strip() or None
-                stock_list.append((ticker, display_name))
-        except:
-            stock_list = [("0700.HK", None)]
+                raw_num = row.get(stock_number_col)
+                if pd.isna(raw_num):
+                    continue
+                raw_num_str = str(raw_num).strip()
+                if raw_num_str.endswith('.0'):
+                    raw_num_str = raw_num_str[:-2]
+                if not raw_num_str.isdigit():
+                    preload_failed_tickers.append({"ticker": raw_num_str or "unknown", "reason": "invalid_stock_number"})
+                    continue
+                ticker = f"{int(raw_num_str):04d}.HK"
+                chinese_name = str(row.get('中文名称', '')).strip() or None
+                english_name = None
+                stock_list.append((ticker, english_name, chinese_name))
+        except Exception:
+            stock_list = [("0700.HK", None, None)]
+            preload_failed_tickers.append({"ticker": "HK_LIST", "reason": "hk_excel_read_failed"})
     else:
         try:
-            df = pd.read_excel('us_stocks.xlsx', skiprows=7)
-            valid_df = df.dropna(subset=['Unnamed: 1'])
+            df = pd.read_excel('SPY_500_holdings_names_numbers_with_Chinese_names.xlsx')
+            ticker_col = next((c for c in ['Ticker', 'ticker', 'Symbol', 'symbol'] if c in df.columns), None)
+            if ticker_col is None:
+                raise ValueError("missing ticker column")
+            valid_df = df.dropna(subset=[ticker_col])
             for _, row in valid_df.iterrows():
-                ticker = str(row['Unnamed: 1']).strip().replace('.', '-')
+                ticker = str(row[ticker_col]).strip().replace('.', '-')
                 if ticker.lower() == 'ticker': continue
-                display_name = str(row.get('中文名称', '')).strip() or str(row.get('Unnamed: 2', '')).strip() or None
-                stock_list.append((ticker, display_name))
-        except:
-            stock_list = [("AAPL", None)]
+                chinese_name = str(row.get('中文名称', '')).strip() or None
+                english_name = None
+                stock_list.append((ticker, english_name, chinese_name))
+        except Exception:
+            stock_list = [("AAPL", None, None)]
+            preload_failed_tickers.append({"ticker": "US_LIST", "reason": "us_excel_read_failed"})
     
     results = []
-    failed_tickers = []
-    with ThreadPoolExecutor(max_workers=MAX_WORKERS) as executor:
-        future_to_stock = {executor.submit(get_stock_data, t, n): t for t, n in stock_list}
+    failed_tickers = preload_failed_tickers[:]
+    worker_count = 1 if market == 'HK' else MAX_WORKERS
+    with ThreadPoolExecutor(max_workers=worker_count) as executor:
+        future_to_stock = {executor.submit(get_stock_data, t, en, cn): t for t, en, cn in stock_list}
         for future in as_completed(future_to_stock):
             ticker = future_to_stock[future]
             data, error = future.result()
@@ -119,6 +148,7 @@ def screen_stocks(market='US'):
         "success_count": len(results),
         "failed_count": len(failed_tickers),
         "failed_tickers_sample": failed_tickers[:30],
+        "failed_tickers": failed_tickers,
         "pb_less_1": sec1,
         "rsi_less_35": sec2,
         "rsi_greater_65": sec3
