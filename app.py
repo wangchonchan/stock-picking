@@ -3,19 +3,21 @@ import pandas as pd
 import numpy as np
 import datetime
 import json
-import os
 import time
-import requests
-from flask import Flask, request, jsonify, render_template
+from pathlib import Path
+from flask import Flask, request, jsonify, render_template, abort
 from concurrent.futures import ThreadPoolExecutor, as_completed
 import pytz
 
 app = Flask(__name__)
+MAX_FETCH_RETRIES = 2
+BACKOFF_SECONDS = [0.5, 1.0]
+REQUEST_INTERVAL_SECONDS = 0.25
+MAX_WORKERS = 2
 
 # Local storage configuration
-RECORDS_DIR = "records"
-if not os.path.exists(RECORDS_DIR):
-    os.makedirs(RECORDS_DIR)
+RECORDS_DIR = Path("records")
+RECORDS_DIR.mkdir(exist_ok=True)
 
 def get_hk_time():
     hk_tz = pytz.timezone('Asia/Hong_Kong')
@@ -33,70 +35,30 @@ def calculate_rsi(data, window=14):
     rsi = 100 - (100 / (1 + rs))
     return rsi.iloc[-1]
 
-def get_chinese_name(ticker):
-    """Try to get Chinese name from various sources"""
-    try:
-        # For HK stocks, we can use a simple mapping or a specific query
-        if ticker.endswith('.HK'):
-            symbol = ticker.split('.')[0].lstrip('0')
-            # Try to get from a public API or known source if possible
-            # For now, we'll use yfinance info but try to force a locale if supported
-            pass
-            
-        stock = yf.Ticker(ticker)
-        info = stock.info
-        
-        # Some stocks have 'longName' in Chinese if the locale is set or available
-        # But yfinance is mostly English. Let's try to find Chinese in common fields.
-        name = info.get('longName') or info.get('shortName') or ticker
-        
-        # If it's a major stock, we can provide a manual override for better UX
-        overrides = {
-            "0700.HK": "腾讯控股",
-            "9988.HK": "阿里巴巴-W",
-            "0005.HK": "汇丰控股",
-            "1299.HK": "友邦保险",
-            "3690.HK": "美团-W",
-            "1810.HK": "小米集团-W",
-            "9618.HK": "京东集团-SW",
-            "9999.HK": "网易-S",
-            "2318.HK": "中国平安",
-            "0939.HK": "建设银行",
-            "1398.HK": "工商银行",
-            "3988.HK": "中国银行",
-            "AAPL": "苹果公司",
-            "TSLA": "特斯拉",
-            "NVDA": "英伟达",
-            "MSFT": "微软",
-            "GOOGL": "谷歌-A",
-            "AMZN": "亚马逊",
-            "META": "脸书 (Meta)",
-            "BABA": "阿里巴巴 (美股)",
-            "PDD": "拼多多",
-            "JD": "京东 (美股)"
-        }
-        return overrides.get(ticker, name)
-    except:
-        return ticker
-
 def get_stock_data(ticker, display_name=None):
     try:
+        time.sleep(REQUEST_INTERVAL_SECONDS)
         stock = yf.Ticker(ticker)
-        hist = stock.history(period="2mo")
-        if hist.empty:
+        hist = None
+        for attempt in range(MAX_FETCH_RETRIES + 1):
+            hist = stock.history(period="2mo")
+            if not hist.empty:
+                break
+            if attempt < MAX_FETCH_RETRIES:
+                time.sleep(BACKOFF_SECONDS[min(attempt, len(BACKOFF_SECONDS) - 1)])
+        if hist is None or hist.empty:
             return None
         current_price = hist['Close'].iloc[-1]
         rsi = calculate_rsi(hist['Close'], window=14)
         
         pb = None
-        name = display_name or ticker
+        name = ticker
         
         try:
             info = stock.info
             if info:
                 pb = info.get('priceToBook')
-                # Try to get Chinese name
-                name = get_chinese_name(ticker)
+                name = info.get('longName') or info.get('shortName') or ticker
         except:
             pass
             
@@ -133,7 +95,7 @@ def screen_stocks(market='US'):
             stock_list = [("AAPL", None)]
     
     results = []
-    with ThreadPoolExecutor(max_workers=5) as executor:
+    with ThreadPoolExecutor(max_workers=MAX_WORKERS) as executor:
         future_to_stock = {executor.submit(get_stock_data, t, n): t for t, n in stock_list}
         for future in as_completed(future_to_stock):
             data = future.result()
@@ -156,21 +118,27 @@ def index(): return render_template('index.html')
 
 @app.route('/api/screen', methods=['POST'])
 def api_screen():
-    market = request.json.get('market', 'US')
+    payload = request.get_json(silent=True) or {}
+    market = str(payload.get('market', 'US')).upper()
+    if market not in {'US', 'HK'}:
+        return jsonify({"success": False, "message": "invalid market, only US/HK supported"}), 400
     data = screen_stocks(market)
     filename = f"{get_hk_time().strftime('%Y%m%d_%H%M%S')}_{market}.json"
-    with open(os.path.join(RECORDS_DIR, filename), 'w', encoding='utf-8') as f:
+    with open(RECORDS_DIR / filename, 'w', encoding='utf-8') as f:
         json.dump(data, f, indent=4, ensure_ascii=False)
     return jsonify({"success": True, "data": data})
 
 @app.route('/api/records', methods=['GET'])
 def get_records():
-    files = sorted([f for f in os.listdir(RECORDS_DIR) if f.endswith('.json')], reverse=True)
+    files = sorted([p.name for p in RECORDS_DIR.glob('*.json')], reverse=True)
     return jsonify(files)
 
 @app.route('/api/records/<filename>', methods=['GET'])
 def get_record_detail(filename):
-    with open(os.path.join(RECORDS_DIR, filename), 'r', encoding='utf-8') as f:
+    safe_path = (RECORDS_DIR / filename).resolve()
+    if safe_path.parent != RECORDS_DIR.resolve() or safe_path.suffix.lower() != '.json' or not safe_path.exists():
+        abort(404)
+    with open(safe_path, 'r', encoding='utf-8') as f:
         return jsonify(json.load(f))
 
 if __name__ == '__main__':
