@@ -59,10 +59,11 @@ def get_stock_data(ticker, display_name=None):
             info = stock.info
             if info:
                 pb = info.get('priceToBook')
-                # Use info name if available, otherwise keep display_name from Excel
-                name = info.get('longName') or info.get('shortName') or name
+                # We prioritize the display_name (from Excel) to keep it in Chinese/User preference
+                # Only use info name if display_name is missing
+                if not name or name == ticker:
+                    name = info.get('longName') or info.get('shortName') or name
         except Exception:
-            # If info fails, we still have price and RSI, which is enough to show the stock
             pass
         
         return {

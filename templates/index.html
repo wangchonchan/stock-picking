@@ -183,13 +183,8 @@
                 if (result.success) {
                     updateUI(result.data);
                     loadHistory();
-                    if (result.synced) {
-                        statusMsg.textContent = "✅ 扫描完成并已同步至 GitHub";
-                        statusMsg.className = "mb-6 text-center text-green-600 font-bold";
-                    } else {
-                        statusMsg.textContent = "⚠️ 扫描完成，但 GitHub 同步失败（请检查 Token）";
-                        statusMsg.className = "mb-6 text-center text-yellow-600 font-bold";
-                    }
+                    statusMsg.textContent = "✅ 扫描完成";
+                    statusMsg.className = "mb-6 text-center text-green-600 font-bold";
                     statusMsg.classList.remove('hidden');
                 } else {
                     statusMsg.textContent = "❌ 扫描失败: " + result.message;
