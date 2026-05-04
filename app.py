@@ -35,7 +35,7 @@ def calculate_rsi(data, window=14):
     rsi = 100 - (100 / (1 + rs))
     return rsi.iloc[-1]
 
-def get_stock_data(ticker, display_name=None):
+def get_stock_data(ticker, english_name=None, chinese_name=None):
     try:
         time.sleep(REQUEST_INTERVAL_SECONDS)
         stock = yf.Ticker(ticker)
@@ -52,19 +52,21 @@ def get_stock_data(ticker, display_name=None):
         rsi = calculate_rsi(hist['Close'], window=14)
         
         pb = None
-        name = display_name or ticker
+        name = english_name or ticker
         
         try:
             info = stock.info
             if info:
                 pb = info.get('priceToBook')
-                name = display_name or info.get('longName') or info.get('shortName') or ticker
+                name = english_name or info.get('longName') or info.get('shortName') or ticker
         except:
             pass
             
         return {
             "ticker": ticker,
             "name": name,
+            "english_name": english_name or name,
+            "chinese_name": chinese_name,
             "pb": pb,
             "rsi": rsi,
             "price": current_price,
@@ -77,29 +79,31 @@ def screen_stocks(market='US'):
     stock_list = []
     if market == 'HK':
         try:
-            df = pd.read_excel('hk_stocks.xlsx')
+            df = pd.read_excel('HKEX_stock_names_and_numbers_with_Chinese_names.xlsx')
             for _, row in df.iterrows():
                 ticker = f"{int(row['Stock Number']):04d}.HK"
-                display_name = str(row.get('中文名称', '')).strip() or str(row.get('Stock Name', '')).strip() or None
-                stock_list.append((ticker, display_name))
+                chinese_name = str(row.get('中文名称', '')).strip() or None
+                english_name = str(row.get('Stock Name', '')).strip() or None
+                stock_list.append((ticker, english_name, chinese_name))
         except:
-            stock_list = [("0700.HK", None)]
+            stock_list = [("0700.HK", None, None)]
     else:
         try:
-            df = pd.read_excel('us_stocks.xlsx', skiprows=7)
+            df = pd.read_excel('SPY_500_holdings_names_numbers_with_Chinese_names.xlsx', skiprows=7)
             valid_df = df.dropna(subset=['Unnamed: 1'])
             for _, row in valid_df.iterrows():
                 ticker = str(row['Unnamed: 1']).strip().replace('.', '-')
                 if ticker.lower() == 'ticker': continue
-                display_name = str(row.get('中文名称', '')).strip() or str(row.get('Unnamed: 2', '')).strip() or None
-                stock_list.append((ticker, display_name))
+                chinese_name = str(row.get('中文名称', '')).strip() or None
+                english_name = str(row.get('Unnamed: 2', '')).strip() or None
+                stock_list.append((ticker, english_name, chinese_name))
         except:
-            stock_list = [("AAPL", None)]
+            stock_list = [("AAPL", None, None)]
     
     results = []
     failed_tickers = []
     with ThreadPoolExecutor(max_workers=MAX_WORKERS) as executor:
-        future_to_stock = {executor.submit(get_stock_data, t, n): t for t, n in stock_list}
+        future_to_stock = {executor.submit(get_stock_data, t, en, cn): t for t, en, cn in stock_list}
         for future in as_completed(future_to_stock):
             ticker = future_to_stock[future]
             data, error = future.result()
