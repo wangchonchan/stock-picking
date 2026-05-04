@@ -30,7 +30,6 @@ def calculate_rsi(data, window=14):
     gain = delta.where(delta > 0, 0)
     loss = -delta.where(delta < 0, 0)
     
-    # Standard Wilder's smoothing
     avg_gain = gain.ewm(alpha=1/window, min_periods=window).mean()
     avg_loss = loss.ewm(alpha=1/window, min_periods=window).mean()
     
@@ -38,12 +37,12 @@ def calculate_rsi(data, window=14):
     rsi = 100 - (100 / (1 + rs))
     return rsi.iloc[-1]
 
-def get_stock_data(ticker):
-    """Fetch REAL stock data from Yahoo Finance"""
+def get_stock_data(ticker, display_name=None):
+    """Fetch stock data with fallback logic for stability"""
     try:
         stock = yf.Ticker(ticker)
         
-        # 1. Get history for price and RSI (Most reliable)
+        # 1. Get history (More stable than info)
         hist = stock.history(period="2mo")
         if hist.empty:
             return None
@@ -51,57 +50,64 @@ def get_stock_data(ticker):
         current_price = hist['Close'].iloc[-1]
         rsi = calculate_rsi(hist['Close'], window=14)
             
-        # 2. Get PB and Name from info (Only real data)
-        info = stock.info
-        if not info:
-            return None
-            
-        pb = info.get('priceToBook')
-        name = info.get('shortName') or info.get('longName') or ticker
+        # 2. Get PB and Name from info (With fallback)
+        pb = None
+        name = display_name or ticker
         
-        # We only return if we have the core data requested
+        try:
+            # info is unstable, we wrap it in its own try-except
+            info = stock.info
+            if info:
+                pb = info.get('priceToBook')
+                # Use info name if available, otherwise keep display_name from Excel
+                name = info.get('longName') or info.get('shortName') or name
+        except Exception:
+            # If info fails, we still have price and RSI, which is enough to show the stock
+            pass
+        
         return {
             "ticker": ticker,
             "name": name,
             "pb": pb,
             "rsi": rsi,
-            "price": current_price
+            "price": current_price,
+            "url": f"https://finance.yahoo.com/quote/{ticker}"
         }
     except Exception:
         return None
 
 def screen_stocks(market='US'):
+    stock_list = []
     if market == 'HK':
-        # Load HK stocks from Excel file
         try:
             df = pd.read_excel('hk_stocks.xlsx')
-            # Assuming 'Stock Number' column exists as seen in the file preview
-            # Format to 4-digit HK stock code (e.g., 700 -> 0700.HK)
-            tickers = [f"{int(row['Stock Number']):04d}.HK" for _, row in df.iterrows()]
+            for _, row in df.iterrows():
+                ticker = f"{int(row['Stock Number']):04d}.HK"
+                name = row.get('Stock Name', ticker)
+                stock_list.append((ticker, name))
         except Exception as e:
-            print(f"Error loading hk_stocks.xlsx: {e}")
-            # Fallback to a minimal list if file loading fails
-            tickers = ["0700.HK", "9988.HK", "0005.HK"]
+            print(f"Error loading HK list: {e}")
+            stock_list = [("0700.HK", "Tencent"), ("9988.HK", "Alibaba")]
     else: # US
-        # Load US stocks from Excel file
         try:
-            # The Excel has some empty rows at the top, skip them
+            # Skip the header rows in the provided Excel
             df = pd.read_excel('us_stocks.xlsx', skiprows=7)
-            # Filter out rows where Ticker is NaN
-            tickers = df['Ticker'].dropna().astype(str).tolist()
-            # Replace '.' with '-' for yfinance compatibility (e.g., BRK.B -> BRK-B)
-            tickers = [t.replace('.', '-') for t in tickers]
+            # Filter out rows where Ticker (Unnamed: 1) is NaN
+            valid_df = df.dropna(subset=['Unnamed: 1'])
+            for _, row in valid_df.iterrows():
+                ticker = str(row['Unnamed: 1']).strip().replace('.', '-')
+                if ticker.lower() == 'ticker': continue
+                name = row.get('Unnamed: 2', ticker)
+                stock_list.append((ticker, name))
         except Exception as e:
-            print(f"Error loading us_stocks.xlsx: {e}")
-            tickers = ["AAPL", "MSFT", "GOOGL", "AMZN", "META"]
+            print(f"Error loading US list: {e}")
+            stock_list = [("AAPL", "Apple"), ("MSFT", "Microsoft"), ("NVDA", "NVIDIA")]
     
-    tickers = list(set(tickers))
     results = []
-    
-    # Use ThreadPoolExecutor for real-time fetching
-    with ThreadPoolExecutor(max_workers=10) as executor:
-        future_to_ticker = {executor.submit(get_stock_data, t): t for t in tickers}
-        for future in as_completed(future_to_ticker):
+    # Use smaller batch size to avoid rate limiting from Yahoo Finance
+    with ThreadPoolExecutor(max_workers=5) as executor:
+        future_to_stock = {executor.submit(get_stock_data, t, n): t for t, n in stock_list}
+        for future in as_completed(future_to_stock):
             try:
                 data = future.result()
                 if data:
@@ -109,17 +115,17 @@ def screen_stocks(market='US'):
             except:
                 continue
             
-    # Section 1: 0 < PB < 1 (Strictly positive and less than 1)
+    # Section 1: 0 < PB < 1
     sec1 = [s for s in results if s['pb'] is not None and 0 < s['pb'] < 1]
-    sec1 = sorted(sec1, key=lambda x: x['pb'])[:20]
+    sec1 = sorted(sec1, key=lambda x: x['pb'])[:30]
     
     # Section 2: RSI < 35
     sec2 = [s for s in results if s['rsi'] is not None and s['rsi'] < 35]
-    sec2 = sorted(sec2, key=lambda x: x['rsi'])[:20]
+    sec2 = sorted(sec2, key=lambda x: x['rsi'])[:30]
     
     # Section 3: RSI > 65
     sec3 = [s for s in results if s['rsi'] is not None and s['rsi'] > 65]
-    sec3 = sorted(sec3, key=lambda x: x['rsi'], reverse=True)[:20]
+    sec3 = sorted(sec3, key=lambda x: x['rsi'], reverse=True)[:30]
     
     return {
         "date": get_hk_time().strftime("%Y-%m-%d %H:%M"),
@@ -128,17 +134,6 @@ def screen_stocks(market='US'):
         "rsi_less_35": sec2,
         "rsi_greater_65": sec3
     }
-
-def save_locally(data):
-    try:
-        timestamp = get_hk_time().strftime("%Y%m%d_%H%M%S")
-        filename = f"{timestamp}_{data['market']}.json"
-        file_path = os.path.join(RECORDS_DIR, filename)
-        with open(file_path, 'w', encoding='utf-8') as f:
-            json.dump(data, f, indent=4, ensure_ascii=False)
-        return True, filename
-    except Exception as e:
-        return False, str(e)
 
 @app.route('/')
 def index():
@@ -149,8 +144,15 @@ def api_screen():
     try:
         market = request.json.get('market', 'US')
         data = screen_stocks(market)
-        success, filename = save_locally(data)
-        return jsonify({"success": success, "data": data})
+        
+        # Save locally
+        timestamp = get_hk_time().strftime("%Y%m%d_%H%M%S")
+        filename = f"{timestamp}_{market}.json"
+        file_path = os.path.join(RECORDS_DIR, filename)
+        with open(file_path, 'w', encoding='utf-8') as f:
+            json.dump(data, f, indent=4, ensure_ascii=False)
+            
+        return jsonify({"success": True, "data": data})
     except Exception as e:
         return jsonify({"success": False, "message": str(e)}), 500
 

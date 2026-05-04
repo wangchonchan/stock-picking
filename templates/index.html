@@ -100,15 +100,21 @@
             }
             stocks.forEach(s => {
                 const div = document.createElement('div');
-                div.className = 'bg-white p-2 rounded shadow-sm flex justify-between items-center';
+                div.className = 'bg-white p-2 rounded shadow-sm flex justify-between items-center hover:bg-gray-50 transition';
+                
+                // Fix: Check for null/undefined instead of truthy to allow 0
+                const pbVal = (s.pb !== null && s.pb !== undefined) ? s.pb.toFixed(2) : 'N/A';
+                const rsiVal = (s.rsi !== null && s.rsi !== undefined) ? s.rsi.toFixed(1) : 'N/A';
+                const priceVal = (s.price !== null && s.price !== undefined) ? '$' + s.price.toFixed(2) : 'N/A';
+
                 div.innerHTML = `
                     <div class="flex-1 min-w-0">
-                        <div class="font-bold text-gray-800 truncate">${s.name}</div>
+                        <a href="${s.url}" target="_blank" class="font-bold text-blue-600 hover:underline truncate block">${s.name}</a>
                         <div class="text-[10px] text-gray-400 font-mono uppercase">${s.ticker}</div>
                     </div>
                     <div class="text-right ml-2">
-                        <div class="text-sm font-medium text-gray-900">${s.price ? '$' + s.price.toFixed(2) : 'N/A'}</div>
-                        <div class="text-[10px] text-gray-400 whitespace-nowrap">PB: ${s.pb ? s.pb.toFixed(2) : 'N/A'} | RSI: ${s.rsi ? s.rsi.toFixed(1) : 'N/A'}</div>
+                        <div class="text-sm font-medium text-gray-900">${priceVal}</div>
+                        <div class="text-[10px] text-gray-400 whitespace-nowrap">PB: ${pbVal} | RSI: ${rsiVal}</div>
                     </div>
                 `;
                 container.appendChild(div);
@@ -135,16 +141,7 @@
                         btn.textContent = `${displayDate} (${marketPart})`;
                         btn.onclick = () => loadRecordDetail(file);
                         
-                        const delBtn = document.createElement('button');
-                        delBtn.className = 'bg-red-100 hover:bg-red-200 text-red-600 px-2 py-1 text-xs font-bold border-l border-gray-300';
-                        delBtn.textContent = '×';
-                        delBtn.onclick = (e) => {
-                            e.stopPropagation();
-                            if(confirm('确定删除这条记录吗？')) deleteRecord(file);
-                        };
-                        
                         group.appendChild(btn);
-                        group.appendChild(delBtn);
                         historyList.appendChild(group);
                     });
                 } else {
@@ -152,15 +149,6 @@
                 }
             } catch (e) {
                 historyList.innerHTML = '<p class="text-red-500">加载历史记录失败</p>';
-            }
-        }
-
-        async function deleteRecord(filename) {
-            try {
-                const res = await fetch(`/api/records/${filename}`, { method: 'DELETE' });
-                if (res.ok) loadHistory();
-            } catch (e) {
-                alert("删除失败: " + e.message);
             }
         }
 
@@ -195,6 +183,14 @@
                 if (result.success) {
                     updateUI(result.data);
                     loadHistory();
+                    if (result.synced) {
+                        statusMsg.textContent = "✅ 扫描完成并已同步至 GitHub";
+                        statusMsg.className = "mb-6 text-center text-green-600 font-bold";
+                    } else {
+                        statusMsg.textContent = "⚠️ 扫描完成，但 GitHub 同步失败（请检查 Token）";
+                        statusMsg.className = "mb-6 text-center text-yellow-600 font-bold";
+                    }
+                    statusMsg.classList.remove('hidden');
                 } else {
                     statusMsg.textContent = "❌ 扫描失败: " + result.message;
                     statusMsg.className = "mb-6 text-center text-red-600 font-bold";
