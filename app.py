@@ -83,15 +83,17 @@ def screen_stocks(market='US'):
             # Fallback to a minimal list if file loading fails
             tickers = ["0700.HK", "9988.HK", "0005.HK"]
     else: # US
-        # Top 80 US stocks (S&P 100 / Nasdaq 100)
-        tickers = [
-            "AAPL", "MSFT", "GOOGL", "AMZN", "META", "TSLA", "NVDA", "BRK-B", "JPM", "V", "UNH", "MA", "PG", "HD", "DIS",
-            "PYPL", "ADBE", "NFLX", "INTC", "CSCO", "PEP", "KO", "PFE", "XOM", "CVX", "ABT", "CRM", "BAC", "COST", "WMT",
-            "TMO", "AVGO", "ORCL", "ACN", "LIN", "NKE", "DHR", "ABBV", "AMD", "TXN", "PM", "UPS", "NEE", "MS", "RTX",
-            "HON", "LOW", "UNP", "BMY", "AMAT", "SBUX", "CAT", "GS", "GE", "DE", "INTU", "PLD", "AXP", "T", "VZ", "C",
-            "MDLZ", "ISRG", "GILD", "BKNG", "TJX", "ADP", "MDT", "LMT", "SYK", "CI", "VRTX", "MMC", "REGN", "ADI", "ZTS",
-            "BSX", "AMT", "CB", "BA", "MU"
-        ]
+        # Load US stocks from Excel file
+        try:
+            # The Excel has some empty rows at the top, skip them
+            df = pd.read_excel('us_stocks.xlsx', skiprows=7)
+            # Filter out rows where Ticker is NaN
+            tickers = df['Ticker'].dropna().astype(str).tolist()
+            # Replace '.' with '-' for yfinance compatibility (e.g., BRK.B -> BRK-B)
+            tickers = [t.replace('.', '-') for t in tickers]
+        except Exception as e:
+            print(f"Error loading us_stocks.xlsx: {e}")
+            tickers = ["AAPL", "MSFT", "GOOGL", "AMZN", "META"]
     
     tickers = list(set(tickers))
     results = []
