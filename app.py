@@ -72,17 +72,16 @@ def get_stock_data(ticker):
 
 def screen_stocks(market='US'):
     if market == 'HK':
-        # Top 80 HK stocks (Hang Seng Index components)
-        tickers = [
-            "0001.HK", "0002.HK", "0003.HK", "0005.HK", "0006.HK", "0011.HK", "0012.HK", "0016.HK", "0017.HK", "0027.HK",
-            "0066.HK", "0101.HK", "0151.HK", "0175.HK", "0267.HK", "0288.HK", "0386.HK", "0388.HK", "0669.HK", "0688.HK",
-            "0700.HK", "0762.HK", "0823.HK", "0857.HK", "0883.HK", "0939.HK", "0941.HK", "0960.HK", "0968.HK", "0992.HK",
-            "1038.HK", "1044.HK", "1088.HK", "1093.HK", "1109.HK", "1113.HK", "1177.HK", "1199.HK", "1211.HK", "1299.HK",
-            "1313.HK", "1378.HK", "1398.HK", "1810.HK", "1876.HK", "1928.HK", "1929.HK", "2015.HK", "2020.HK", "2269.HK",
-            "2313.HK", "2318.HK", "2319.HK", "2331.HK", "2382.HK", "2388.HK", "2628.HK", "2688.HK", "3690.HK", "3968.HK",
-            "3988.HK", "6030.HK", "6098.HK", "6618.HK", "6690.HK", "6862.HK", "9618.HK", "9633.HK", "9888.HK", "9961.HK",
-            "9988.HK", "9999.HK", "1024.HK", "0010.HK", "0019.HK", "0083.HK", "0291.HK", "0322.HK", "0358.HK", "0390.HK"
-        ]
+        # Load HK stocks from Excel file
+        try:
+            df = pd.read_excel('hk_stocks.xlsx')
+            # Assuming 'Stock Number' column exists as seen in the file preview
+            # Format to 4-digit HK stock code (e.g., 700 -> 0700.HK)
+            tickers = [f"{int(row['Stock Number']):04d}.HK" for _, row in df.iterrows()]
+        except Exception as e:
+            print(f"Error loading hk_stocks.xlsx: {e}")
+            # Fallback to a minimal list if file loading fails
+            tickers = ["0700.HK", "9988.HK", "0005.HK"]
     else: # US
         # Top 80 US stocks (S&P 100 / Nasdaq 100)
         tickers = [
@@ -108,8 +107,8 @@ def screen_stocks(market='US'):
             except:
                 continue
             
-    # Section 1: PB < 1
-    sec1 = [s for s in results if s['pb'] is not None and s['pb'] < 1]
+    # Section 1: 0 < PB < 1 (Strictly positive and less than 1)
+    sec1 = [s for s in results if s['pb'] is not None and 0 < s['pb'] < 1]
     sec1 = sorted(sec1, key=lambda x: x['pb'])[:20]
     
     # Section 2: RSI < 35
