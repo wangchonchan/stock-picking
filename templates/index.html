@@ -105,7 +105,7 @@
 
         function updateSummary(data) {
             scanSummaryCounts.textContent = `总扫描: ${data.total_tickers || 0} | 成功: ${data.success_count || 0} | 失败: ${data.failed_count || 0}`;
-            const failed = data.failed_tickers_sample || [];
+            const failed = data.failed_tickers || data.failed_tickers_sample || [];
             if (!failed.length) {
                 scanFailedList.textContent = '无';
             } else {
