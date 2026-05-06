@@ -15,6 +15,39 @@ BACKOFF_SECONDS = [0.8, 1.5, 2.5]
 REQUEST_INTERVAL_SECONDS = 0.4
 MAX_WORKERS = 2
 
+def as_json_number(value):
+    """Return a plain finite float for JSON, otherwise None.
+
+    Yahoo/pandas often return numpy scalar values, NaN, or +/-inf. Python
+    can emit NaN in json.dumps by default, but browsers reject it because it is
+    not valid JSON.
+    """
+    if value is None:
+        return None
+    try:
+        if pd.isna(value):
+            return None
+        number = float(value)
+    except (TypeError, ValueError):
+        return None
+    return number if np.isfinite(number) else None
+
+def sanitize_json(value):
+    """Recursively convert pandas/numpy values into strict JSON-safe values."""
+    if isinstance(value, dict):
+        return {key: sanitize_json(item) for key, item in value.items()}
+    if isinstance(value, list):
+        return [sanitize_json(item) for item in value]
+    if isinstance(value, tuple):
+        return [sanitize_json(item) for item in value]
+    if isinstance(value, (np.integer,)):
+        return int(value)
+    if isinstance(value, (float, np.floating)):
+        return as_json_number(value)
+    if isinstance(value, (np.bool_,)):
+        return bool(value)
+    return value
+
 # Local storage configuration
 RECORDS_DIR = Path("records")
 RECORDS_DIR.mkdir(exist_ok=True)
@@ -24,16 +57,24 @@ def get_hk_time():
     return datetime.datetime.now(hk_tz)
 
 def calculate_rsi(data, window=14):
-    if len(data) < window + 1:
+    clean_data = data.dropna()
+    if len(clean_data) < window + 1:
         return None
-    delta = data.diff()
+    delta = clean_data.diff()
     gain = delta.where(delta > 0, 0)
     loss = -delta.where(delta < 0, 0)
     avg_gain = gain.ewm(alpha=1/window, min_periods=window).mean()
     avg_loss = loss.ewm(alpha=1/window, min_periods=window).mean()
-    rs = avg_gain / avg_loss
-    rsi = 100 - (100 / (1 + rs))
-    return rsi.iloc[-1]
+    latest_gain = as_json_number(avg_gain.iloc[-1])
+    latest_loss = as_json_number(avg_loss.iloc[-1])
+    if latest_gain is None or latest_loss is None:
+        return None
+    if latest_loss == 0:
+        if latest_gain == 0:
+            return 50.0
+        return 100.0
+    rs = latest_gain / latest_loss
+    return as_json_number(100 - (100 / (1 + rs)))
 
 def get_stock_data(ticker, english_name=None, chinese_name=None):
     try:
@@ -54,19 +95,23 @@ def get_stock_data(ticker, english_name=None, chinese_name=None):
             if last_history_error:
                 return None, f"history_error_after_retries({last_history_error})"
             return None, "empty_history_after_retries"
-        current_price = hist['Close'].iloc[-1]
+        current_price = as_json_number(hist['Close'].iloc[-1])
         rsi = calculate_rsi(hist['Close'], window=14)
         
         pb = None
         name = english_name or ticker
         
-        try:
-            info = stock.info
-            if info:
-                pb = info.get('priceToBook')
-                name = english_name or info.get('longName') or info.get('shortName') or ticker
-        except:
-            pass
+        for attempt in range(MAX_FETCH_RETRIES + 1):
+            try:
+                info = stock.info
+                if info:
+                    pb = as_json_number(info.get('priceToBook'))
+                    name = english_name or info.get('longName') or info.get('shortName') or ticker
+                    break
+            except Exception:
+                pass
+            if attempt < MAX_FETCH_RETRIES:
+                time.sleep(BACKOFF_SECONDS[min(attempt, len(BACKOFF_SECONDS) - 1)])
             
         return {
             "ticker": ticker,
@@ -137,11 +182,13 @@ def screen_stocks(market='US'):
             else:
                 failed_tickers.append({"ticker": ticker, "reason": error or "unknown"})
             
-    sec1 = sorted([s for s in results if s['pb'] is not None and 0 < s['pb'] < 1], key=lambda x: x['pb'])[:30]
-    sec2 = sorted([s for s in results if s['rsi'] is not None and s['rsi'] < 35], key=lambda x: x['rsi'])[:30]
-    sec3 = sorted([s for s in results if s['rsi'] is not None and s['rsi'] > 65], key=lambda x: x['rsi'], reverse=True)[:30]
+    results = sanitize_json(results)
+    sec1 = sorted([s for s in results if s['pb'] is not None and 0 < s['pb'] < 1], key=lambda x: (x['pb'], x['ticker']))[:30]
+    sec2 = sorted([s for s in results if s['rsi'] is not None and s['rsi'] < 35], key=lambda x: (x['rsi'], x['ticker']))[:30]
+    sec3 = sorted([s for s in results if s['rsi'] is not None and s['rsi'] > 65], key=lambda x: (-x['rsi'], x['ticker']))[:30]
+    failed_tickers = sorted(failed_tickers, key=lambda x: x.get('ticker', ''))
     
-    return {
+    return sanitize_json({
         "date": get_hk_time().strftime("%Y-%m-%d %H:%M"),
         "market": market,
         "total_tickers": len(stock_list),
@@ -152,7 +199,7 @@ def screen_stocks(market='US'):
         "pb_less_1": sec1,
         "rsi_less_35": sec2,
         "rsi_greater_65": sec3
-    }
+    })
 
 @app.route('/')
 def index(): return render_template('index.html')
@@ -166,7 +213,7 @@ def api_screen():
     data = screen_stocks(market)
     filename = f"{get_hk_time().strftime('%Y%m%d_%H%M%S')}_{market}.json"
     with open(RECORDS_DIR / filename, 'w', encoding='utf-8') as f:
-        json.dump(data, f, indent=4, ensure_ascii=False)
+        json.dump(data, f, indent=4, ensure_ascii=False, allow_nan=False)
     return jsonify({"success": True, "data": data})
 
 @app.route('/api/records', methods=['GET'])
