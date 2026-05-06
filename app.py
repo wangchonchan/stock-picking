@@ -4,9 +4,11 @@ import numpy as np
 import datetime
 import json
 import time
+import uuid
 from pathlib import Path
 from flask import Flask, request, jsonify, render_template, abort
 from concurrent.futures import ThreadPoolExecutor, as_completed
+from threading import Lock, Thread
 import pytz
 
 app = Flask(__name__)
@@ -14,6 +16,41 @@ MAX_FETCH_RETRIES = 3
 BACKOFF_SECONDS = [0.8, 1.5, 2.5]
 REQUEST_INTERVAL_SECONDS = 0.4
 MAX_WORKERS = 2
+SCAN_JOBS = {}
+SCAN_JOBS_LOCK = Lock()
+
+def as_json_number(value):
+    """Return a plain finite float for JSON, otherwise None.
+
+    Yahoo/pandas often return numpy scalar values, NaN, or +/-inf. Python
+    can emit NaN in json.dumps by default, but browsers reject it because it is
+    not valid JSON.
+    """
+    if value is None:
+        return None
+    try:
+        if pd.isna(value):
+            return None
+        number = float(value)
+    except (TypeError, ValueError):
+        return None
+    return number if np.isfinite(number) else None
+
+def sanitize_json(value):
+    """Recursively convert pandas/numpy values into strict JSON-safe values."""
+    if isinstance(value, dict):
+        return {key: sanitize_json(item) for key, item in value.items()}
+    if isinstance(value, list):
+        return [sanitize_json(item) for item in value]
+    if isinstance(value, tuple):
+        return [sanitize_json(item) for item in value]
+    if isinstance(value, (np.integer,)):
+        return int(value)
+    if isinstance(value, (float, np.floating)):
+        return as_json_number(value)
+    if isinstance(value, (np.bool_,)):
+        return bool(value)
+    return value
 
 def as_json_number(value):
     """Return a plain finite float for JSON, otherwise None.
@@ -126,7 +163,7 @@ def get_stock_data(ticker, english_name=None, chinese_name=None):
     except Exception as e:
         return None, f"fetch_exception({type(e).__name__}: {str(e)[:120]})"
 
-def screen_stocks(market='US'):
+def screen_stocks(market='US', progress_callback=None):
     stock_list = []
     preload_failed_tickers = []
     if market == 'HK':
@@ -171,6 +208,17 @@ def screen_stocks(market='US'):
     
     results = []
     failed_tickers = preload_failed_tickers[:]
+    total_tickers = len(stock_list)
+    completed_count = 0
+    if progress_callback:
+        progress_callback({
+            "status": "running",
+            "total_tickers": total_tickers,
+            "completed_count": completed_count,
+            "success_count": len(results),
+            "failed_count": len(failed_tickers),
+            "message": f"已载入 {total_tickers} 只股票，准备开始扫描"
+        })
     worker_count = 1 if market == 'HK' else MAX_WORKERS
     with ThreadPoolExecutor(max_workers=worker_count) as executor:
         future_to_stock = {executor.submit(get_stock_data, t, en, cn): t for t, en, cn in stock_list}
@@ -181,17 +229,28 @@ def screen_stocks(market='US'):
                 results.append(data)
             else:
                 failed_tickers.append({"ticker": ticker, "reason": error or "unknown"})
+            completed_count += 1
+            if progress_callback:
+                progress_callback({
+                    "status": "running",
+                    "total_tickers": total_tickers,
+                    "completed_count": completed_count,
+                    "success_count": len(results),
+                    "failed_count": len(failed_tickers),
+                    "current_ticker": ticker,
+                    "message": f"已扫描 {completed_count}/{total_tickers}：{ticker}"
+                })
             
     results = sanitize_json(results)
-    sec1 = sorted([s for s in results if s['pb'] is not None and 0 < s['pb'] < 1], key=lambda x: (x['pb'], x['ticker']))[:30]
-    sec2 = sorted([s for s in results if s['rsi'] is not None and s['rsi'] < 35], key=lambda x: (x['rsi'], x['ticker']))[:30]
-    sec3 = sorted([s for s in results if s['rsi'] is not None and s['rsi'] > 65], key=lambda x: (-x['rsi'], x['ticker']))[:30]
+    sec1 = sorted([s for s in results if s['pb'] is not None and 0 < s['pb'] < 1], key=lambda x: (x['pb'], x['ticker']))
+    sec2 = sorted([s for s in results if s['rsi'] is not None and s['rsi'] < 35], key=lambda x: (x['rsi'], x['ticker']))
+    sec3 = sorted([s for s in results if s['rsi'] is not None and s['rsi'] > 65], key=lambda x: (-x['rsi'], x['ticker']))
     failed_tickers = sorted(failed_tickers, key=lambda x: x.get('ticker', ''))
     
     return sanitize_json({
         "date": get_hk_time().strftime("%Y-%m-%d %H:%M"),
         "market": market,
-        "total_tickers": len(stock_list),
+        "total_tickers": total_tickers,
         "success_count": len(results),
         "failed_count": len(failed_tickers),
         "failed_tickers_sample": failed_tickers[:30],
@@ -203,6 +262,72 @@ def screen_stocks(market='US'):
 
 @app.route('/')
 def index(): return render_template('index.html')
+
+def update_scan_job(job_id, updates):
+    with SCAN_JOBS_LOCK:
+        job = SCAN_JOBS.get(job_id)
+        if not job:
+            return
+        job.update(sanitize_json(updates))
+        job["updated_at"] = get_hk_time().strftime("%Y-%m-%d %H:%M:%S")
+
+def run_scan_job(job_id, market):
+    def report_progress(progress):
+        update_scan_job(job_id, progress)
+
+    try:
+        data = screen_stocks(market, progress_callback=report_progress)
+        filename = f"{get_hk_time().strftime('%Y%m%d_%H%M%S')}_{market}.json"
+        with open(RECORDS_DIR / filename, 'w', encoding='utf-8') as f:
+            json.dump(data, f, indent=4, ensure_ascii=False, allow_nan=False)
+        update_scan_job(job_id, {
+            "status": "completed",
+            "completed_count": data.get("total_tickers", 0),
+            "total_tickers": data.get("total_tickers", 0),
+            "success_count": data.get("success_count", 0),
+            "failed_count": data.get("failed_count", 0),
+            "message": "扫描完成",
+            "result": data,
+            "record_file": filename
+        })
+    except Exception as e:
+        update_scan_job(job_id, {
+            "status": "failed",
+            "message": f"扫描失败: {type(e).__name__}: {str(e)[:120]}"
+        })
+
+@app.route('/api/screen/start', methods=['POST'])
+def api_screen_start():
+    payload = request.get_json(silent=True) or {}
+    market = str(payload.get('market', 'US')).upper()
+    if market not in {'US', 'HK'}:
+        return jsonify({"success": False, "message": "invalid market, only US/HK supported"}), 400
+
+    job_id = uuid.uuid4().hex
+    with SCAN_JOBS_LOCK:
+        SCAN_JOBS[job_id] = {
+            "job_id": job_id,
+            "market": market,
+            "status": "starting",
+            "total_tickers": 0,
+            "completed_count": 0,
+            "success_count": 0,
+            "failed_count": 0,
+            "message": "正在启动扫描",
+            "created_at": get_hk_time().strftime("%Y-%m-%d %H:%M:%S"),
+            "updated_at": get_hk_time().strftime("%Y-%m-%d %H:%M:%S")
+        }
+
+    Thread(target=run_scan_job, args=(job_id, market), daemon=True).start()
+    return jsonify({"success": True, "job_id": job_id})
+
+@app.route('/api/screen/progress/<job_id>', methods=['GET'])
+def api_screen_progress(job_id):
+    with SCAN_JOBS_LOCK:
+        job = SCAN_JOBS.get(job_id)
+        if not job:
+            return jsonify({"success": False, "message": "scan job not found"}), 404
+        return jsonify({"success": True, "job": sanitize_json(job)})
 
 @app.route('/api/screen', methods=['POST'])
 def api_screen():
