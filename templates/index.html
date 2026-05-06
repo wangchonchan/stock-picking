@@ -43,6 +43,17 @@
             </div>
         </div>
 
+        <div id="progressPanel" class="mb-6 bg-blue-50 border border-blue-200 rounded-lg p-4 hidden">
+            <div class="flex justify-between items-center mb-2 text-sm font-semibold text-blue-900">
+                <span id="progressText">准备开始扫描...</span>
+                <span id="progressPercent">0%</span>
+            </div>
+            <div class="w-full bg-blue-100 rounded-full h-3 overflow-hidden">
+                <div id="progressBar" class="bg-blue-600 h-3 rounded-full transition-all duration-300" style="width: 0%"></div>
+            </div>
+            <div id="progressDetails" class="mt-2 text-xs text-blue-800">已扫描 0/0 | 成功 0 | 失败 0</div>
+        </div>
+
         <div id="statusMsg" class="mb-6 text-center hidden"></div>
 
         <div id="resultsHeader" class="mb-4 text-center hidden">
@@ -51,15 +62,15 @@
 
         <div id="results" class="grid grid-cols-1 md:grid-cols-3 gap-6 hidden">
             <div class="bg-blue-50 p-4 rounded-lg border border-blue-200">
-                <h2 class="text-xl font-bold text-blue-800 mb-4 border-b border-blue-200 pb-2">0 < PB < 1 (破净股)</h2>
+                <h2 class="text-xl font-bold text-blue-800 mb-4 border-b border-blue-200 pb-2">0 < PB < 1 (破净股) <span id="sec1_count" class="text-sm font-normal"></span></h2>
                 <div id="sec1_list" class="space-y-2"></div>
             </div>
             <div class="bg-green-50 p-4 rounded-lg border border-green-200">
-                <h2 class="text-xl font-bold text-green-800 mb-4 border-b border-green-200 pb-2">RSI < 35 (超卖)</h2>
+                <h2 class="text-xl font-bold text-green-800 mb-4 border-b border-green-200 pb-2">RSI < 35 (超卖) <span id="sec2_count" class="text-sm font-normal"></span></h2>
                 <div id="sec2_list" class="space-y-2"></div>
             </div>
             <div class="bg-red-50 p-4 rounded-lg border border-red-200">
-                <h2 class="text-xl font-bold text-red-800 mb-4 border-b border-red-200 pb-2">RSI > 65 (超买)</h2>
+                <h2 class="text-xl font-bold text-red-800 mb-4 border-b border-red-200 pb-2">RSI > 65 (超买) <span id="sec3_count" class="text-sm font-normal"></span></h2>
                 <div id="sec3_list" class="space-y-2"></div>
             </div>
         </div>
@@ -92,13 +103,20 @@
         const scanSummary = document.getElementById('scanSummary');
         const scanSummaryCounts = document.getElementById('scanSummaryCounts');
         const scanFailedList = document.getElementById('scanFailedList');
+        const progressPanel = document.getElementById('progressPanel');
+        const progressText = document.getElementById('progressText');
+        const progressPercent = document.getElementById('progressPercent');
+        const progressBar = document.getElementById('progressBar');
+        const progressDetails = document.getElementById('progressDetails');
+        let progressTimer = null;
+
 
         function updateUI(data) {
             resultsTitle.textContent = `${data.date} - ${data.market === 'HK' ? '港股' : '美股'} 扫描结果`;
             resultsHeader.classList.remove('hidden');
-            updateList('sec1_list', data.pb_less_1);
-            updateList('sec2_list', data.rsi_less_35);
-            updateList('sec3_list', data.rsi_greater_65);
+            updateList('sec1_list', data.pb_less_1, 'sec1_count');
+            updateList('sec2_list', data.rsi_less_35, 'sec2_count');
+            updateList('sec3_list', data.rsi_greater_65, 'sec3_count');
             results.classList.remove('hidden');
             updateSummary(data);
         }
@@ -114,14 +132,19 @@
             scanSummary.classList.remove('hidden');
         }
 
-        function updateList(containerId, stocks) {
+        function updateList(containerId, stocks, countId) {
             const container = document.getElementById(containerId);
+            const count = document.getElementById(countId);
+            const visibleStocks = stocks || [];
             container.innerHTML = '';
-            if (!stocks || stocks.length === 0) {
+            if (count) {
+                count.textContent = `(${visibleStocks.length})`;
+            }
+            if (visibleStocks.length === 0) {
                 container.innerHTML = '<p class="text-gray-500 italic">未找到符合条件的股票</p>';
                 return;
             }
-            stocks.forEach(s => {
+            visibleStocks.forEach(s => {
                 const div = document.createElement('div');
                 div.className = 'bg-white p-2 rounded shadow-sm flex justify-between items-center hover:bg-gray-50 transition';
                 
@@ -142,6 +165,55 @@
                 `;
                 container.appendChild(div);
             });
+        }
+
+        function updateProgress(job) {
+            const total = job.total_tickers || 0;
+            const completed = job.completed_count || 0;
+            const percent = total > 0 ? Math.min(100, Math.round((completed / total) * 100)) : 0;
+            progressPanel.classList.remove('hidden');
+            progressText.textContent = job.message || '正在扫描中...';
+            progressPercent.textContent = `${percent}%`;
+            progressBar.style.width = `${percent}%`;
+            progressDetails.textContent = `已扫描 ${completed}/${total} | 成功 ${job.success_count || 0} | 失败 ${job.failed_count || 0}${job.current_ticker ? ' | 当前/最近: ' + job.current_ticker : ''}`;
+        }
+
+        function stopProgressPolling() {
+            if (progressTimer) {
+                clearInterval(progressTimer);
+                progressTimer = null;
+            }
+        }
+
+        async function fetchProgress(jobId) {
+            const res = await fetch(`/api/screen/progress/${jobId}`);
+            const progress = await res.json();
+            if (!progress.success) {
+                throw new Error(progress.message || '读取扫描进度失败');
+            }
+            const job = progress.job;
+            updateProgress(job);
+            if (job.status === 'completed') {
+                stopProgressPolling();
+                loading.classList.add('hidden');
+                screenBtn.disabled = false;
+                updateUI(job.result);
+                loadHistory();
+                statusMsg.textContent = '✅ 扫描完成';
+                statusMsg.className = 'mb-6 text-center text-green-600 font-bold';
+                statusMsg.classList.remove('hidden');
+                return true;
+            }
+            if (job.status === 'failed') {
+                stopProgressPolling();
+                loading.classList.add('hidden');
+                screenBtn.disabled = false;
+                statusMsg.textContent = '❌ 扫描失败: ' + (job.message || '未知错误');
+                statusMsg.className = 'mb-6 text-center text-red-600 font-bold';
+                statusMsg.classList.remove('hidden');
+                return true;
+            }
+            return false;
         }
 
         async function loadHistory() {
@@ -188,34 +260,50 @@
 
         screenBtn.addEventListener('click', async () => {
             const market = marketSelect.value;
+            stopProgressPolling();
             loading.classList.remove('hidden');
             screenBtn.disabled = true;
             results.classList.add('hidden');
             resultsHeader.classList.add('hidden');
             scanSummary.classList.add('hidden');
             statusMsg.classList.add('hidden');
+            updateProgress({
+                total_tickers: 0,
+                completed_count: 0,
+                success_count: 0,
+                failed_count: 0,
+                message: '正在启动扫描...'
+            });
 
             try {
-                const res = await fetch('/api/screen', {
+                const res = await fetch('/api/screen/start', {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
                     body: JSON.stringify({ market })
                 });
                 const result = await res.json();
-                loading.classList.add('hidden');
-                screenBtn.disabled = false;
-                if (result.success) {
-                    updateUI(result.data);
-                    loadHistory();
-                    statusMsg.textContent = "✅ 扫描完成";
-                    statusMsg.className = "mb-6 text-center text-green-600 font-bold";
-                    statusMsg.classList.remove('hidden');
-                } else {
-                    statusMsg.textContent = "❌ 扫描失败: " + result.message;
-                    statusMsg.className = "mb-6 text-center text-red-600 font-bold";
-                    statusMsg.classList.remove('hidden');
+                if (!result.success) {
+                    throw new Error(result.message || '启动扫描失败');
                 }
+
+                const finishedImmediately = await fetchProgress(result.job_id);
+                if (finishedImmediately) {
+                    return;
+                }
+                progressTimer = setInterval(async () => {
+                    try {
+                        await fetchProgress(result.job_id);
+                    } catch (e) {
+                        stopProgressPolling();
+                        loading.classList.add('hidden');
+                        screenBtn.disabled = false;
+                        statusMsg.textContent = '❌ 发生错误: ' + e.message;
+                        statusMsg.className = 'mb-6 text-center text-red-600 font-bold';
+                        statusMsg.classList.remove('hidden');
+                    }
+                }, 1000);
             } catch (e) {
+                stopProgressPolling();
                 loading.classList.add('hidden');
                 screenBtn.disabled = false;
                 statusMsg.textContent = "❌ 发生错误: " + e.message;
