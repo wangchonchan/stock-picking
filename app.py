@@ -52,6 +52,39 @@ def sanitize_json(value):
         return bool(value)
     return value
 
+def as_json_number(value):
+    """Return a plain finite float for JSON, otherwise None.
+
+    Yahoo/pandas often return numpy scalar values, NaN, or +/-inf. Python
+    can emit NaN in json.dumps by default, but browsers reject it because it is
+    not valid JSON.
+    """
+    if value is None:
+        return None
+    try:
+        if pd.isna(value):
+            return None
+        number = float(value)
+    except (TypeError, ValueError):
+        return None
+    return number if np.isfinite(number) else None
+
+def sanitize_json(value):
+    """Recursively convert pandas/numpy values into strict JSON-safe values."""
+    if isinstance(value, dict):
+        return {key: sanitize_json(item) for key, item in value.items()}
+    if isinstance(value, list):
+        return [sanitize_json(item) for item in value]
+    if isinstance(value, tuple):
+        return [sanitize_json(item) for item in value]
+    if isinstance(value, (np.integer,)):
+        return int(value)
+    if isinstance(value, (float, np.floating)):
+        return as_json_number(value)
+    if isinstance(value, (np.bool_,)):
+        return bool(value)
+    return value
+
 # Local storage configuration
 RECORDS_DIR = Path("records")
 RECORDS_DIR.mkdir(exist_ok=True)
